@@ -1,0 +1,13 @@
+services:
+  decisra-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "4000:4000"
+    env_file:
+      - .env
+    environment:
+      # Ensure the container listens on the expected port.
+      - PORT=4000
+    restart: unless-stopped

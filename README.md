@@ -80,6 +80,20 @@ Build + run:
 Health check:
 - `GET http://localhost:<PORT>/health`
 
+## Docker
+
+### Build + run (Docker)
+- Build: `docker build -t decisra-backend .`
+- Run: `docker run --rm -p 4000:4000 --env-file .env decisra-backend`
+
+### Run (docker-compose)
+- Start: `docker compose up --build`
+- Stop: `docker compose down`
+
+Notes:
+- The backend reads config from environment variables (see `.env.example`).
+- SSE endpoints are supported in Docker as-is; if you put a reverse proxy in front (nginx, etc.), ensure response buffering is disabled for `text/event-stream`.
+
 ## API Overview
 
 ### Health

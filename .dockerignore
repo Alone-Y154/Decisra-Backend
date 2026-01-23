@@ -1,0 +1,22 @@
+node_modules
+npm-debug.log
+yarn-error.log
+pnpm-debug.log
+
+# Build output
+dist
+
+# VCS
+.git
+.gitignore
+
+# Local env files (pass via env vars / docker-compose env_file)
+.env
+
+# Editor/OS
+.vscode
+.DS_Store
+Thumbs.db
+
+# Tests/coverage (if added later)
+coverage
