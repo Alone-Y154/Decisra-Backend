@@ -63,7 +63,13 @@ export async function ensureDailyRoom(input: CreateRoomInput): Promise<DailyRoom
 
     return { name: created.name, url: created.url };
   } catch (err: any) {
-    if (err && err.status === 409) {
+    const status = err && typeof err === "object" ? (err as any).status : undefined;
+    const message = err instanceof Error ? err.message : "";
+    const isAlreadyExists = typeof message === "string" && /already exists/i.test(message);
+
+    // Daily typically returns 409 for existing rooms, but we defensively treat
+    // other statuses that still indicate an "already exists" conflict.
+    if (status === 409 || (status === 400 && isAlreadyExists) || isAlreadyExists) {
       const existing = (await dailyFetch(`/rooms/${encodeURIComponent(input.roomName)}`, {
         apiKey: input.apiKey,
         method: "GET"

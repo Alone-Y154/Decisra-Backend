@@ -19,6 +19,13 @@ export function createSessionRouter(deps?: { store?: SessionStore }) {
   const router = Router();
   const store = deps?.store ?? new SessionStore();
 
+  const writeSseEvent = (res: any, input: { event?: string; data: unknown }) => {
+    if (input.event) {
+      res.write(`event: ${input.event}\n`);
+    }
+    res.write(`data: ${JSON.stringify(input.data)}\n\n`);
+  };
+
   const getBearerToken = (authorizationHeader: unknown): string | undefined => {
     if (typeof authorizationHeader !== "string") return undefined;
     const [scheme, token] = authorizationHeader.split(" ");
@@ -118,15 +125,15 @@ export function createSessionRouter(deps?: { store?: SessionStore }) {
         store.delete(sessionId);
         throw new HttpError(410, "Session expired");
       }
-
-      const { role: requestedRole } = validateJoinBody(req.body);
-
       const bearer = getBearerToken(req.headers.authorization);
-      const isHost = bearer
-        ? verifyHostToken({ token: bearer, sessionId, jwtSecret })
-        : false;
+      const isHost = bearer ? verifyHostToken({ token: bearer, sessionId, jwtSecret }) : false;
 
-      const finalRole = isHost ? "host" : requestedRole;
+      // This endpoint is host-only. All non-hosts must use the join-request flow.
+      if (!isHost) {
+        throw new HttpError(401, "Host token required (use /join-request for participants)");
+      }
+
+      const finalRole = "host";
       const roomName = `decisra-${sessionId}`;
 
       const expSeconds = Math.floor(session.expiresAt / 1000);
@@ -141,7 +148,7 @@ export function createSessionRouter(deps?: { store?: SessionStore }) {
         roomName,
         exp: expSeconds,
         isOwner: finalRole === "host",
-        startAudioOff: finalRole === "observer",
+        startAudioOff: false,
         startVideoOff: true
       });
 
@@ -201,7 +208,9 @@ export function createSessionRouter(deps?: { store?: SessionStore }) {
     }
   });
 
-  router.get("/api/session/:id/join-request/:requestId", (req, res, next) => {
+  // Server-Sent Events (SSE) stream for a single join request.
+  // Frontend can subscribe once instead of polling continuously.
+  router.get("/api/session/:id/join-request/:requestId/stream", (req, res, next) => {
     try {
       const sessionId = req.params.id;
       const requestId = req.params.requestId;
@@ -224,21 +233,83 @@ export function createSessionRouter(deps?: { store?: SessionStore }) {
         throw new HttpError(404, "Join request not found");
       }
 
-      // Only return token/url once admitted; keep it simple for frontend polling.
-      return res.status(200).json({
-        requestId: joinRequest.id,
-        status: joinRequest.status,
-        role: joinRequest.finalRole,
-        roomUrl: joinRequest.roomUrl,
-        dailyToken: joinRequest.dailyToken
+      res.status(200);
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+
+      // Some runtimes support it; harmless otherwise.
+      if (typeof (res as any).flushHeaders === "function") {
+        (res as any).flushHeaders();
+      }
+
+      let lastStatus: string | undefined;
+      const sendSnapshot = () => {
+        const current = session.joinRequests.get(requestId);
+        if (!current) {
+          writeSseEvent(res, { event: "error", data: { message: "Join request not found" } });
+          res.end();
+          return;
+        }
+
+        const snapshot = {
+          requestId: current.id,
+          status: current.status,
+          role: current.finalRole,
+          roomUrl: current.roomUrl,
+          dailyToken: current.dailyToken
+        };
+
+        // Always emit first snapshot; then only emit on status changes.
+        if (lastStatus === undefined || current.status !== lastStatus) {
+          lastStatus = current.status;
+          writeSseEvent(res, { event: "status", data: snapshot });
+        }
+
+        // Once decided, end the stream.
+        if (current.status === "admitted" || current.status === "denied") {
+          res.end();
+        }
+      };
+
+      // Initial snapshot
+      sendSnapshot();
+
+      const interval = setInterval(() => {
+        // Session expiry check
+        const s = store.get(sessionId);
+        if (!s) {
+          writeSseEvent(res, { event: "error", data: { message: "Session not found" } });
+          res.end();
+          return;
+        }
+        if (store.isExpired(s)) {
+          store.delete(sessionId);
+          writeSseEvent(res, { event: "error", data: { message: "Session expired" } });
+          res.end();
+          return;
+        }
+
+        sendSnapshot();
+      }, 1000);
+
+      const keepAlive = setInterval(() => {
+        // Comment ping to keep proxies from closing the connection.
+        res.write(": ping\n\n");
+      }, 15000);
+
+      req.on("close", () => {
+        clearInterval(interval);
+        clearInterval(keepAlive);
       });
     } catch (err) {
       return next(err);
     }
   });
 
-  // Host views pending requests
-  router.get("/api/session/:id/join-requests", (req, res, next) => {
+  // Server-Sent Events (SSE) stream for host: pending join requests.
+  // This replaces polling GET /api/session/:id/join-requests.
+  router.get("/api/session/:id/join-requests/stream", (req, res, next) => {
     try {
       const env = getEnv();
       const jwtSecret = env.JWT_SECRET;
@@ -251,6 +322,11 @@ export function createSessionRouter(deps?: { store?: SessionStore }) {
         throw new HttpError(400, "Validation: session id is required");
       }
 
+      const bearer = getBearerToken(req.headers.authorization);
+      if (!bearer || !verifyHostToken({ token: bearer, sessionId, jwtSecret })) {
+        throw new HttpError(401, "Host token required");
+      }
+
       const session = store.get(sessionId);
       if (!session) {
         throw new HttpError(404, "Session not found");
@@ -261,20 +337,66 @@ export function createSessionRouter(deps?: { store?: SessionStore }) {
         throw new HttpError(410, "Session expired");
       }
 
-      const bearer = getBearerToken(req.headers.authorization);
-      if (!bearer || !verifyHostToken({ token: bearer, sessionId, jwtSecret })) {
-        throw new HttpError(401, "Host token required");
+      res.status(200);
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+
+      // Some runtimes support it; harmless otherwise.
+      if (typeof (res as any).flushHeaders === "function") {
+        (res as any).flushHeaders();
       }
 
-      const pending = Array.from(session.joinRequests.values())
-        .filter((r) => r.status === "pending")
-        .map((r) => ({
-          requestId: r.id,
-          requestedRole: r.requestedRole,
-          createdAt: r.createdAt
-        }));
+      const getPending = () =>
+        Array.from(session.joinRequests.values())
+          .filter((r) => r.status === "pending")
+          .map((r) => ({
+            requestId: r.id,
+            requestedRole: r.requestedRole,
+            createdAt: r.createdAt
+          }))
+          .sort((a, b) => a.createdAt - b.createdAt);
 
-      return res.status(200).json({ requests: pending });
+      let lastFingerprint: string | undefined;
+      const sendSnapshot = () => {
+        const current = store.get(sessionId);
+        if (!current) {
+          writeSseEvent(res, { event: "error", data: { message: "Session not found" } });
+          res.end();
+          return;
+        }
+        if (store.isExpired(current)) {
+          store.delete(sessionId);
+          writeSseEvent(res, { event: "error", data: { message: "Session expired" } });
+          res.end();
+          return;
+        }
+
+        const pending = getPending();
+        const fingerprint = JSON.stringify(pending);
+
+        if (lastFingerprint === undefined || fingerprint !== lastFingerprint) {
+          lastFingerprint = fingerprint;
+          writeSseEvent(res, { event: "requests", data: { sessionId, requests: pending } });
+        }
+      };
+
+      // Initial snapshot
+      sendSnapshot();
+
+      const interval = setInterval(() => {
+        sendSnapshot();
+      }, 1000);
+
+      const keepAlive = setInterval(() => {
+        // Comment ping to keep proxies from closing the connection.
+        res.write(": ping\n\n");
+      }, 15000);
+
+      req.on("close", () => {
+        clearInterval(interval);
+        clearInterval(keepAlive);
+      });
     } catch (err) {
       return next(err);
     }

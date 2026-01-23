@@ -97,10 +97,9 @@ Health check:
   - `410` if existed but expired
   - `200` with public metadata otherwise
 
-### Direct Join (role decided by backend)
+### Host Join (host-only)
 - `POST /api/session/:id/join`
-  - Body: `{ "role": "participant" | "observer" }`
-  - Optional header: `Authorization: Bearer <hostToken>`
+  - Header: `Authorization: Bearer <hostToken>`
   - Response: `{ role, roomName, roomUrl, dailyToken }`
 
 ### Link Join + Host Admits
@@ -108,14 +107,15 @@ Health check:
   - Body: `{ "role": "participant" | "observer" }`
   - Response: `{ requestId, status: "pending" }`
 
-- `GET /api/session/:id/join-request/:requestId`
-  - Used by joiners to poll
-  - Returns `pending | denied | admitted`
-  - If admitted, includes `{ roomUrl, dailyToken, role }`
+- `GET /api/session/:id/join-request/:requestId/stream` (SSE)
+  - Used by joiners to subscribe for updates (no polling)
+  - Emits `event: status` with `{ requestId, status, role, roomUrl, dailyToken }`
+  - Stream ends automatically once `admitted` or `denied`
 
-- `GET /api/session/:id/join-requests` (host-only)
+- `GET /api/session/:id/join-requests/stream` (SSE, host-only)
   - Header: `Authorization: Bearer <hostToken>`
-  - Response: list of pending requests
+  - Emits `event: requests` with `{ sessionId, requests: [{ requestId, requestedRole, createdAt }] }`
+  - Used by host UI to receive pending join request updates without polling
 
 - `POST /api/session/:id/join-requests/:requestId/admit` (host-only)
   - Header: `Authorization: Bearer <hostToken>`
