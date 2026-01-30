@@ -93,8 +93,8 @@ const corsOptions: CorsOptions = {
   optionsSuccessStatus: 204
 };
 
-// Preflight handler (fixes missing CORS headers on OPTIONS for some routes/setups)
-app.options("*", cors(corsOptions));
+// Preflight handler (Express 5 doesn't support "*"; use a regex to match all paths)
+app.options(/.*/, cors(corsOptions));
 
 app.use(cors(corsOptions));
 
