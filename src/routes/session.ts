@@ -47,7 +47,7 @@ export function createSessionRouter(deps?: { store?: SessionStore }) {
         type,
         scope,
         context,
-        aiUsageLimit: DEFAULT_AI_USAGE_LIMIT,
+        aiUsageLimit: type === "verdict" ? DEFAULT_AI_USAGE_LIMIT : 0,
         ttlMs: SESSION_TTL_MS
       });
 
@@ -148,7 +148,7 @@ export function createSessionRouter(deps?: { store?: SessionStore }) {
         roomName,
         exp: expSeconds,
         isOwner: finalRole === "host",
-        startAudioOff: false,
+        startAudioOff: true,
         startVideoOff: true
       });
 
@@ -566,6 +566,12 @@ export function createSessionRouter(deps?: { store?: SessionStore }) {
 
   router.post("/api/session/:id/ai", (req, res, next) => {
     try {
+      const env = getEnv();
+      const jwtSecret = env.JWT_SECRET;
+      if (!jwtSecret) {
+        throw new HttpError(500, "JWT_SECRET is not configured");
+      }
+
       const sessionId = req.params.id;
       if (!sessionId) {
         throw new HttpError(400, "Validation: session id is required");
@@ -589,18 +595,44 @@ export function createSessionRouter(deps?: { store?: SessionStore }) {
         req.body && typeof req.body === "object" && !Array.isArray(req.body)
           ? (req.body as Record<string, unknown>).role
           : undefined;
-      if (requestedRole === "observer") {
-        throw new HttpError(403, "Observers cannot use AI");
+
+      const requestId =
+        req.body && typeof req.body === "object" && !Array.isArray(req.body)
+          ? (req.body as Record<string, unknown>).requestId
+          : undefined;
+
+      if (requestedRole !== "host" && requestedRole !== "participant") {
+        throw new HttpError(400, "Validation: role must be 'host' or 'participant'");
       }
 
-      if (session.aiUsageCount >= session.aiUsageLimit) {
+      let clientKey: string;
+      if (requestedRole === "host") {
+        const bearer = getBearerToken(req.headers.authorization);
+        if (!bearer || !verifyHostToken({ token: bearer, sessionId, jwtSecret })) {
+          throw new HttpError(401, "Host token required");
+        }
+        clientKey = "host";
+      } else {
+        if (typeof requestId !== "string" || requestId.trim().length === 0) {
+          throw new HttpError(400, "Validation: requestId is required for participant AI");
+        }
+        const jr = session.joinRequests.get(requestId);
+        if (!jr) throw new HttpError(404, "Join request not found");
+        if (jr.status !== "admitted") throw new HttpError(403, "Join request not admitted");
+        if (jr.finalRole !== "participant") throw new HttpError(403, "Observers cannot use AI");
+        clientKey = `participant:${requestId}`;
+      }
+
+      const usage = session.aiUsageByClient.get(clientKey) ?? 0;
+      if (usage >= session.aiUsageLimit) {
         throw new HttpError(429, "AI usage limit reached");
       }
 
-      session.aiUsageCount += 1;
+      const nextUsage = usage + 1;
+      session.aiUsageByClient.set(clientKey, nextUsage);
       return res.status(200).json({
         ok: true,
-        aiUsageCount: session.aiUsageCount,
+        aiUsageCount: nextUsage,
         aiUsageLimit: session.aiUsageLimit
       });
     } catch (err) {

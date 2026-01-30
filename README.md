@@ -99,6 +99,13 @@ Notes:
 ### Health
 - `GET /health` → `{ "status": "ok" }`
 
+### Contact
+- `POST /api/contact`
+  - Body:
+    - `{ "email": "you@company.com", "message": "..." }`
+    - Optional: `{ "about", "role", "teamSize", "interestType" }`
+  - Response: `{ "ok": true }`
+
 ### Sessions
 - `POST /api/session`
   - Request:
@@ -144,16 +151,43 @@ Notes:
   - Deletes the session from the in-memory store and attempts to delete the Daily room
 
 ### AI (verdict sessions only)
+
+#### Verdict AI (Realtime)
+This backend supports a WebSocket proxy to the OpenAI Realtime API for verdict sessions.
+The proxy injects the session `scope`/`context` as instructions and enforces `aiUsageLimit` **per AI client**:
+- Host gets `aiUsageLimit` uses.
+- Each admitted participant gets their own `aiUsageLimit` uses.
+
+- `POST /api/session/:id/ai/connect`
+  - Purpose: preflight check + mint an `aiToken` used to open the realtime WebSocket.
+  - Host:
+    - Header: `Authorization: Bearer <hostToken>`
+    - Body: `{ "role": "host" }`
+  - Participant:
+    - Body: `{ "role": "participant", "requestId": "<joinRequestId>" }`
+    - Notes: `requestId` must exist, must be `admitted`, and must have `finalRole: participant`.
+  - Response: `{ wsPath, aiToken, expiresAt, aiUsageCount, aiUsageLimit, remaining }`
+
+- `WS /api/session/:id/ai/ws?token=<aiToken>`
+  - Optional: you may also include `&role=host|participant` (server will sanity-check it)
+  - Proxies messages to OpenAI Realtime
+  - Rejects client `session.update` (scope/context is controlled by server)
+  - Validates each user prompt is within session `scope` (and `context`) before forwarding
+  - Increments usage on each `conversation.item.create` from `role: user`
+  - Closes the connection when `aiUsageLimit` is reached or the session expires
+
+#### Legacy quota endpoint
 - `POST /api/session/:id/ai`
-  - Enforces:
-    - session must be active
-    - session type must be `verdict`
-    - observer cannot use AI
-    - `aiUsageCount < aiUsageLimit`
+  - Legacy per-message quota endpoint (not required for Realtime WS)
+  - Host requires `Authorization: Bearer <hostToken>` with `{ "role": "host" }`
+  - Participant requires `{ "role": "participant", "requestId": "<joinRequestId>" }`
+  - Enforces verdict-only, blocks observers, increments per-client `aiUsageCount` and returns counters
 
 ## Notes / Phase 1 Constraints
 
 - Sessions and join requests are stored in memory.
   - Restarting the backend clears them.
+- Sessions are automatically purged after `expiresAt` even without API traffic.
+- When a session expires, the backend best-effort deletes the Daily room (to end any active call).
 - Daily tokens are minted by the backend and returned to clients only when needed.
 - Host authority is based on a signed JWT (`hostToken`).

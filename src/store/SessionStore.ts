@@ -25,7 +25,10 @@ export type Session = {
   context?: string;
   createdAt: number;
   expiresAt: number;
-  aiUsageCount: number;
+  // AI quota is tracked per AI client (host or an admitted participant).
+  // Keyed by an internal client key like "host" or "participant:<requestId>".
+  aiUsageByClient: Map<string, number>;
+  // Per-client quota for verdict AI.
   aiUsageLimit: number;
   joinRequests: Map<string, JoinRequest>;
 };
@@ -51,7 +54,7 @@ export class SessionStore {
       context: input.context,
       createdAt: now,
       expiresAt: now + input.ttlMs,
-      aiUsageCount: 0,
+      aiUsageByClient: new Map(),
       aiUsageLimit: input.aiUsageLimit,
       joinRequests: new Map()
     };
@@ -68,7 +71,11 @@ export class SessionStore {
     this.sessions.delete(sessionId);
   }
 
+  values(): IterableIterator<Session> {
+    return this.sessions.values();
+  }
+
   isExpired(session: Session, now: number = Date.now()): boolean {
-    return now > session.expiresAt;
+    return now >= session.expiresAt;
   }
 }
