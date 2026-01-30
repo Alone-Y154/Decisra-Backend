@@ -1,6 +1,6 @@
 import express from "express";
 import http from "http";
-import cors from "cors";
+import cors, { type CorsOptions } from "cors";
 import { getEnv } from "./utils/env";
 import { healthRouter } from "./routes/health";
 import { createSessionRouter } from "./routes/session";
@@ -70,26 +70,33 @@ if (env.TRUST_PROXY) {
 app.use(express.json());
 
 // CORS
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      // Allow non-browser tools (curl, Postman) with no Origin header
-      if (!origin) return callback(null, true);
+const corsOptions: CorsOptions = {
+  origin: (origin, callback) => {
+    // Allow non-browser tools (curl, Postman) with no Origin header
+    if (!origin) return callback(null, true);
 
-      if (env.CORS_ORIGINS.length === 0) {
-        // Default permissive behavior if not configured
-        return callback(null, true);
-      }
+    if (env.CORS_ORIGINS.length === 0) {
+      // Default permissive behavior if not configured
+      return callback(null, true);
+    }
 
-      if (env.CORS_ORIGINS.includes(origin)) {
-        return callback(null, true);
-      }
+    if (env.CORS_ORIGINS.includes(origin)) {
+      return callback(null, true);
+    }
 
-      return callback(new Error("CORS: origin not allowed"));
-    },
-    credentials: true
-  })
-);
+    return callback(new Error("CORS: origin not allowed"));
+  },
+  credentials: true,
+  // Make preflights explicit and predictable.
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  optionsSuccessStatus: 204
+};
+
+// Preflight handler (fixes missing CORS headers on OPTIONS for some routes/setups)
+app.options("*", cors(corsOptions));
+
+app.use(cors(corsOptions));
 
 // Routes
 app.use(healthRouter);
